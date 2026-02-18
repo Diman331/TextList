@@ -20,6 +20,8 @@ from org.telegram.messenger import (
 )
 from org.telegram.tgnet import ConnectionsManager
 from org.telegram.ui import LaunchActivity
+from org.telegram.ui.Components import AlertsCreator
+from android.app import AlertDialog
 
 __id__ = "autoproxy"
 __name__ = "AutoProxy"
@@ -1567,6 +1569,24 @@ class ExitfyPlugin(BasePlugin):
             try:
                 t = _get_selected_type()
                 links = _fetch_links(t)
+                
+                # Show feedback dialog after fetching
+                if manual:
+                    ctx = ApplicationLoader.applicationContext
+                    if links:
+                        msg = f"Успешно! Найдено {len(links)} прокси."
+                        dlg = AlertsCreator.createSimpleAlert(ctx, "Обновление", msg)
+                    else:
+                        dlg = AlertsCreator.createSimpleAlert(ctx, "Обновление", "Ошибка! Прокси не найдены.")
+                    
+                    def show_dlg():
+                        try:
+                            dlg.show()
+                        except:
+                            pass
+                    
+                    run_on_ui_thread(show_dlg)
+
                 if not links:
                     return
 
@@ -1589,7 +1609,16 @@ class ExitfyPlugin(BasePlugin):
 
                 run_on_ui_thread(apply_on_ui)
             except Exception:
-                pass
+                # Show error feedback if exception occurs during processing
+                if manual:
+                    ctx = ApplicationLoader.applicationContext
+                    def show_error():
+                        try:
+                            dlg = AlertsCreator.createSimpleAlert(ctx, "Обновление", "Ошибка при обновлении!")
+                            dlg.show()
+                        except:
+                            pass
+                    run_on_ui_thread(show_error)
             finally:
                 try:
                     self._refresh_lock.release()
