@@ -6,12 +6,8 @@ Thumbs.db
 # Logs
 *.log
 
-# Temp files
+# Temporary files
 *.tmp
-
-# Editor/IDE files
-.vscode/
-.idea/
 *.swp
 *.swo
 
@@ -20,35 +16,44 @@ Thumbs.db
 .env.local
 *.env.*
 
-# Python specific
+# Editor/IDE files
+.vscode/
+.idea/
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
 *.so
-.coverage
-htmlcov/
-.coverage.*
-.python-version
-
-# Build artifacts
-dist/
-build/
 *.egg-info/
 .eggs/
 
-# Virtual environments
+# Dependencies
+node_modules/
 venv/
 .venv/
-env/
-ENV/
+.env/
+lib/
+share/
+include/
+
+# Build outputs
+dist/
+build/
+target/
+out/
+bin/
+obj/
 
 # Testing
+.coverage
+coverage/
+htmlcov/
 .pytest_cache/
 .mypy_cache/
-.tox/
-.coverage
+.hypothesis/
 
 # Compressed files
 *.zip
