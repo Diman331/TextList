@@ -1574,10 +1574,10 @@ class ExitfyPlugin(BasePlugin):
                 if manual:
                     ctx = ApplicationLoader.applicationContext
                     if links:
-                        msg = f"Успешно! Найдено {len(links)} прокси."
-                        dlg = AlertsCreator.createSimpleAlert(ctx, "Обновление", msg)
+                        msg = f"Обновлено, прокси {len(links)}"
+                        dlg = AlertsCreator.createSimpleAlert(ctx, "", msg)
                     else:
-                        dlg = AlertsCreator.createSimpleAlert(ctx, "Обновление", "Ошибка! Прокси не найдены.")
+                        dlg = AlertsCreator.createSimpleAlert(ctx, "", "Обновлено, прокси 0")
                     
                     def show_dlg():
                         try:
