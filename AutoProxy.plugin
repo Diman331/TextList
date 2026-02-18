@@ -1577,7 +1577,8 @@ class ExitfyPlugin(BasePlugin):
                         msg = f"Обновлено, прокси {len(links)}"
                         dlg = AlertsCreator.createSimpleAlert(ctx, "", msg)
                     else:
-                        dlg = AlertsCreator.createSimpleAlert(ctx, "", "Обновлено, прокси 0")
+                        msg = "Обновлено, прокси 0"
+                        dlg = AlertsCreator.createSimpleAlert(ctx, "", msg)
                     
                     def show_dlg():
                         try:
