@@ -11,6 +11,7 @@ from base_plugin import BasePlugin, AppEvent, MethodHook, MenuItemData, MenuItem
 from hook_utils import find_class
 from android_utils import run_on_ui_thread
 from ui.settings import Header, Switch, Selector, Text, Divider
+from ui.bulletin import BulletinHelper
 from org.telegram.messenger import (
     ApplicationLoader,
     MessagesController,
@@ -1570,23 +1571,14 @@ class ExitfyPlugin(BasePlugin):
                 t = _get_selected_type()
                 links = _fetch_links(t)
                 
-                # Show feedback dialog after fetching
+                # Show notification after fetching
                 if manual:
-                    ctx = ApplicationLoader.applicationContext
                     if links:
                         msg = f"Обновлено, прокси {len(links)}"
-                        dlg = AlertsCreator.createSimpleAlert(ctx, "", msg)
+                        BulletinHelper.show_info(msg)
                     else:
                         msg = "Обновлено, прокси 0"
-                        dlg = AlertsCreator.createSimpleAlert(ctx, "", msg)
-                    
-                    def show_dlg():
-                        try:
-                            dlg.show()
-                        except:
-                            pass
-                    
-                    run_on_ui_thread(show_dlg)
+                        BulletinHelper.show_info(msg)
 
                 if not links:
                     return
