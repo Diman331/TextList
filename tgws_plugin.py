@@ -75,6 +75,7 @@ TRANSLATIONS = {
     "connection_info": ("Информация о соединении", "Connection info"),
     "active_connections": ("Активные соединения", "Active connections"),
     "ws_tunnels": ("WS туннели", "WS tunnels"),
+    "menu_settings": ("Настройки TG WS Unblock", "TG WS Unblock settings"),
 }
 
 def Z(key):
@@ -521,14 +522,14 @@ class TGWSPlugin(BasePlugin):
         self.enabled = False
         self.config_thread = None
     
-    def onCreate(self):
-        """Инициализация плагина"""
+    def on_plugin_load(self):
+        """Инициализация плагина при загрузке"""
         self.enabled = _pget_bool("enabled", False)
         if self.enabled:
             self.start_proxy()
     
-    def onDestroy(self):
-        """Очистка при уничтожении"""
+    def on_plugin_unload(self):
+        """Очистка при выгрузке плагина"""
         self.stop_proxy()
     
     def start_proxy(self):
@@ -587,54 +588,56 @@ class TGWSPlugin(BasePlugin):
         
         configure()
     
-    def getSettingsScreen(self, activity):
+    def create_settings(self):
         """Создаёт экран настроек"""
         items = []
         
-        items.append(Header(Z("settings_header")))
+        items.append(Header(text=Z("settings_header")))
         
         # Вкл/выкл плагин
         items.append(Switch(
-            "enable",
-            Z("enable_plugin"),
-            self.enabled,
-            lambda v: self.toggle_plugin(v)
+            key="enable",
+            text=Z("enable_plugin"),
+            default=self.enabled,
+            on_change=lambda v: self.toggle_plugin(v)
         ))
         
         # Статус
         status = Z("status_running") if (self.proxy_server and self.proxy_server.running) else Z("status_stopped")
-        items.append(Text(f"{Z('proxy_status')}: {status}"))
+        items.append(Text(text=f"{Z('proxy_status')}: {status}", icon="msg_settings"))
         
         # Кнопки управления
         if self.proxy_server and self.proxy_server.running:
-            items.append(MenuItemData(
-                "stop_btn",
-                Z("stop_proxy"),
-                lambda: self.stop_proxy()
-            ))
+            items.append(Text(text=Z("stop_proxy"), icon="msg_stop", on_click=lambda v: self.stop_proxy()))
         else:
-            items.append(MenuItemData(
-                "start_btn",
-                Z("start_proxy"),
-                lambda: self.start_proxy()
-            ))
+            items.append(Text(text=Z("start_proxy"), icon="msg_start", on_click=lambda v: self.start_proxy()))
         
         # Автонастройка
-        items.append(MenuItemData(
-            "auto_config_btn",
-            Z("auto_config"),
-            lambda: self.auto_configure_proxy()
-        ))
+        items.append(Text(text=Z("auto_config"), icon="msg_link", on_click=lambda v: self.auto_configure_proxy()))
         
         # Статистика
         if self.proxy_server:
             stats = self.proxy_server.get_stats()
             items.append(Divider())
-            items.append(Header(Z("connection_info")))
-            items.append(Text(f"{Z('active_connections')}: {stats['connections']}"))
-            items.append(Text(f"{Z('ws_tunnels')}: {stats['ws_tunnels']}"))
+            items.append(Header(text=Z("connection_info")))
+            items.append(Text(text=f"{Z('active_connections')}: {stats['connections']}", icon="msg_info"))
+            items.append(Text(text=f"{Z('ws_tunnels')}: {stats['ws_tunnels']}", icon="msg_info"))
+        
+        items.append(Divider())
+        items.append(Text(text=Z("open_tg_settings"), icon="msg_settings", on_click=lambda v: self._open_tg_proxy_settings()))
         
         return items
+    
+    def _open_tg_proxy_settings(self):
+        """Открывает настройки прокси Telegram"""
+        try:
+            from org.telegram.ui import ProxyListActivity
+            from client_utils import get_last_fragment
+            frag = get_last_fragment()
+            if frag:
+                frag.presentFragment(ProxyListActivity())
+        except Exception as e:
+            log(f"Error opening proxy settings: {e}")
     
     def toggle_plugin(self, enabled):
         """Переключает состояние плагина"""
@@ -649,6 +652,25 @@ class TGWSPlugin(BasePlugin):
             MenuItemData(
                 "settings",
                 Z("menu_settings"),
-                lambda: self.openSettings()
+                lambda: self._open_settings()
             )
         ]
+    
+    def _open_settings(self):
+        """Открывает настройки плагина через стандартный механизм Exteragram"""
+        try:
+            from com.exteragram.messenger.plugins import PluginsController
+            PC = PluginsController.getInstance()
+            if PC:
+                try:
+                    PC.openPluginSettings(self.id)
+                    return
+                except:
+                    pass
+            # Fallback: используем get_last_fragment
+            from client_utils import get_last_fragment
+            frag = get_last_fragment()
+            if frag and PC:
+                PC.getInstance().openPluginSettings(self.id, frag)
+        except Exception as e:
+            log(f"Error opening settings: {e}")

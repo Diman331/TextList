@@ -1,1 +1,4 @@
-Nothing should be ignored based on the provided file changes. The only added file is `tgws_plugin.py`, which appears to be a Python source file and should not be ignored.
+```
+__pycache__/
+*.pyc
+```
