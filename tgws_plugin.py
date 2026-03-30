@@ -14,6 +14,8 @@ import struct
 import hashlib
 import json
 import re
+import base64
+import random
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -380,9 +382,6 @@ class ProxyServer:
         """Реле через WebSocket туннель"""
         try:
             endpoint = DC_ENDPOINTS.get(dc, DC_ENDPOINTS[2])
-            
-            # Упрощённая реализация WebSocket клиента
-            # В реальной реализации нужно использовать полноценную WebSocket библиотеку
             host = endpoint.replace("wss://", "").replace("/apiws", "")
             
             # Создаём SSL соединение
@@ -392,105 +391,167 @@ class ProxyServer:
             else:
                 remote = socket.create_connection((host, 443), timeout=10)
             
-            # Формируем WebSocket handshake
-            key = base64.b64encode(bytes([random.randint(0, 255) for _ in range(16)])).decode()
+            # Генерируем Sec-WebSocket-Key (16 случайных байт в base64)
+            ws_key = base64.b64encode(bytes([random.randint(0, 255) for _ in range(16)])).decode('ascii')
             
-            handshake = (
-                f"GET /apiws HTTP/1.1\r\n"
+            # Формируем WebSocket handshake запрос
+            handshake_request = (
+                "GET /apiws HTTP/1.1\r\n"
                 f"Host: {host}\r\n"
-                f"Upgrade: websocket\r\n"
-                f"Connection: Upgrade\r\n"
-                f"Sec-WebSocket-Key: {key}\r\n"
-                f"Sec-WebSocket-Protocol: binary\r\n"
-                f"Sec-WebSocket-Version: 13\r\n"
-                f"\r\n"
-            ).encode()
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {ws_key}\r\n"
+                "Sec-WebSocket-Protocol: binary\r\n"
+                "Sec-WebSocket-Version: 13\r\n"
+                "\r\n"
+            ).encode('utf-8')
             
-            remote.sendall(handshake)
+            remote.sendall(handshake_request)
             
-            # Читаем ответ
-            response = remote.recv(1024)
+            # Читаем ответ сервера
+            response = b""
+            remote.settimeout(5.0)
+            try:
+                while True:
+                    chunk = remote.recv(4096)
+                    if not chunk:
+                        break
+                    response += chunk
+                    if b"\r\n\r\n" in response:
+                        break
+            except socket.timeout:
+                pass
             
-            if b"101" in response or b"Upgrade: websocket" in response:
-                # Отправляем init данные
-                remote.sendall(init_data)
-                
-                # Реле данных
-                client_socket.setblocking(False)
-                remote.setblocking(False)
-                
-                def forward_client_to_ws():
-                    try:
-                        while self.running:
-                            data = client_socket.recv(4096)
+            # Проверяем успешность handshake
+            if b"101" not in response and b"Upgrade: websocket" not in response:
+                log(f"WS handshake failed DC{dc}: {response[:200]}")
+                remote.close()
+                return
+            
+            # Отправляем init пакет (первые 64 байта obfuscated2) как сырые данные
+            # После успешного WebSocket соединения первый пакет идёт без обёртки
+            remote.sendall(init_data)
+            
+            # Переключаем сокеты в неблокирующий режим для реле
+            client_socket.setblocking(False)
+            remote.setblocking(False)
+            
+            # Запускаем два потока для двунаправленного реле
+            def forward_client_to_ws():
+                try:
+                    while self.running:
+                        try:
+                            data = client_socket.recv(32768)
                             if not data:
                                 break
-                            # WebSocket frame
-                            frame = self.encode_ws_frame(data)
+                            # Кодируем данные в WebSocket бинарный фрейм
+                            frame = self._encode_ws_frame(data, opcode=0x2)
                             remote.sendall(frame)
-                    except:
-                        pass
-                
-                def forward_ws_to_client():
-                    try:
-                        buffer = b""
-                        while self.running:
-                            chunk = remote.recv(4096)
+                        except socket.error as e:
+                            if e.errno in (11, 10035):  # EAGAIN / WSAEWOULDBLOCK
+                                time.sleep(0.001)
+                                continue
+                            raise
+                except Exception as e:
+                    log(f"Client->WS error DC{dc}: {e}")
+            
+            def forward_ws_to_client():
+                try:
+                    buffer = b""
+                    while self.running:
+                        try:
+                            chunk = remote.recv(32768)
                             if not chunk:
                                 break
                             buffer += chunk
                             
-                            # Парсим WebSocket фреймы
+                            # Парсим WebSocket фреймы из буфера
                             while len(buffer) >= 2:
-                                fin = (buffer[0] >> 7) & 1
-                                opcode = buffer[0] & 0x0F
-                                masked = (buffer[1] >> 7) & 1
-                                payload_len = buffer[1] & 0x7F
+                                byte1 = buffer[0]
+                                byte2 = buffer[1]
+                                
+                                fin = (byte1 >> 7) & 1
+                                opcode = byte1 & 0x0F
+                                masked = (byte2 >> 7) & 1
+                                payload_len = byte2 & 0x7F
                                 
                                 header_len = 2
                                 if payload_len == 126:
+                                    if len(buffer) < 4:
+                                        break
+                                    payload_len = struct.unpack('>H', buffer[2:4])[0]
                                     header_len = 4
                                 elif payload_len == 127:
+                                    if len(buffer) < 10:
+                                        break
+                                    payload_len = struct.unpack('>Q', buffer[2:10])[0]
                                     header_len = 10
                                 
                                 if masked:
                                     header_len += 4
                                 
-                                if len(buffer) < header_len + payload_len:
+                                total_frame_len = header_len + payload_len
+                                if len(buffer) < total_frame_len:
                                     break
                                 
-                                if opcode == 0x1 or opcode == 0x2:  # Text or Binary
-                                    payload = buffer[header_len:header_len+payload_len]
-                                    if masked:
-                                        mask = buffer[header_len-4:header_len]
-                                        payload = bytes(payload[i] ^ mask[i % 4] for i in range(len(payload)))
-                                    
-                                    client_socket.sendall(payload)
+                                # Извлекаем payload
+                                payload_start = header_len
+                                payload_end = header_len + payload_len
+                                payload = bytearray(buffer[payload_start:payload_end])
                                 
-                                buffer = buffer[header_len+payload_len:]
-                    except:
-                        pass
-                
-                t1 = threading.Thread(target=forward_client_to_ws, daemon=True)
-                t2 = threading.Thread(target=forward_ws_to_client, daemon=True)
-                t1.start()
-                t2.start()
-                t1.join()
-                t2.join()
+                                # Если замаскировано - размаскируем
+                                if masked:
+                                    mask_start = header_len - 4
+                                    mask = buffer[mask_start:mask_start+4]
+                                    for i in range(len(payload)):
+                                        payload[i] ^= mask[i % 4]
+                                
+                                # Обработка по типу opcode
+                                if opcode == 0x1 or opcode == 0x2:  # Text или Binary
+                                    client_socket.sendall(bytes(payload))
+                                elif opcode == 0x8:  # Close
+                                    log(f"WS close received DC{dc}")
+                                    break
+                                elif opcode == 0x9:  # Ping - отправляем Pong
+                                    pong_frame = self._encode_ws_frame(bytes(payload), opcode=0xA)
+                                    remote.sendall(pong_frame)
+                                # opcode 0xA (Pong) игнорируем
+                                
+                                # Удаляем обработанный фрейм из буфера
+                                buffer = buffer[total_frame_len:]
+                                
+                        except socket.error as e:
+                            if e.errno in (11, 10035):  # EAGAIN / WSAEWOULDBLOCK
+                                time.sleep(0.001)
+                                continue
+                            raise
+                except Exception as e:
+                    log(f"WS->Client error DC{dc}: {e}")
             
-            remote.close()
+            t1 = threading.Thread(target=forward_client_to_ws, daemon=True)
+            t2 = threading.Thread(target=forward_ws_to_client, daemon=True)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+            
+            try:
+                remote.close()
+            except:
+                pass
+                
         except Exception as e:
             log(f"WS relay error DC{dc}: {e}")
     
-    def encode_ws_frame(self, data, opcode=0x2):
-        """Кодирует данные в WebSocket фрейм"""
+    def _encode_ws_frame(self, data, opcode=0x2):
+        """Кодирует данные в WebSocket бинарный фрейм (без маскирования, от сервера к клиенту не нужно)"""
         length = len(data)
         frame = bytearray()
         
-        # FIN + opcode
-        frame.append(0x80 | opcode)
+        # Byte 0: FIN (1) + opcode
+        frame.append(0x80 | (opcode & 0x0F))
         
-        # Длина payload
+        # Byte 1+: длина payload (без маски, т.к. сервер не маскирует)
         if length <= 125:
             frame.append(length)
         elif length <= 65535:
@@ -500,7 +561,9 @@ class ProxyServer:
             frame.append(127)
             frame.extend(struct.pack('>Q', length))
         
+        # Payload
         frame.extend(data)
+        
         return bytes(frame)
     
     def get_stats(self):
