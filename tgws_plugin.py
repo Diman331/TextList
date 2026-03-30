@@ -521,16 +521,104 @@ class TGWSPlugin(BasePlugin):
         self.proxy_server = None
         self.enabled = False
         self.config_thread = None
+        self._chat_menu_item_id = "tgws_chat_settings"
+        self._drawer_menu_item_id = "tgws_drawer_settings"
     
     def on_plugin_load(self):
         """Инициализация плагина при загрузке"""
         self.enabled = _pget_bool("enabled", False)
+        
+        # Добавляем пункты меню
+        self._add_menu_items()
+        
         if self.enabled:
             self.start_proxy()
     
     def on_plugin_unload(self):
         """Очистка при выгрузке плагина"""
+        self._remove_menu_items()
         self.stop_proxy()
+    
+    def _add_menu_items(self):
+        """Добавляет пункты меню для доступа к настройкам"""
+        def on_click(ctx):
+            self._open_settings()
+        
+        try:
+            self.remove_menu_item(self._chat_menu_item_id)
+        except:
+            pass
+        
+        try:
+            self.add_menu_item(MenuItemData(
+                menu_type=MenuItemType.CHAT_ACTION_MENU,
+                item_id=self._chat_menu_item_id,
+                text=Z("menu_settings"),
+                on_click=on_click,
+                icon="msg_settings",
+                priority=1,
+            ))
+        except:
+            pass
+        
+        try:
+            self.remove_menu_item(self._drawer_menu_item_id)
+        except:
+            pass
+        
+        try:
+            self.add_menu_item(MenuItemData(
+                menu_type=MenuItemType.DRAWER_MENU,
+                item_id=self._drawer_menu_item_id,
+                text=Z("menu_settings"),
+                on_click=on_click,
+                icon="msg_settings",
+                priority=1,
+            ))
+        except:
+            pass
+    
+    def _remove_menu_items(self):
+        """Удаляет пункты меню"""
+        try:
+            self.remove_menu_item(self._chat_menu_item_id)
+        except:
+            pass
+        try:
+            self.remove_menu_item(self._drawer_menu_item_id)
+        except:
+            pass
+    
+    def _open_settings(self):
+        """Открывает настройки плагина через стандартный механизм Exteragram"""
+        try:
+            from com.exteragram.messenger.plugins import PluginsController
+            from com.exteragram.messenger.plugins.ui import PluginSettingsActivity
+            from client_utils import get_last_fragment
+            
+            PC = PluginsController.getInstance()
+            if PC:
+                try:
+                    plugin_obj = PC.plugins.get(self.id)
+                    if plugin_obj:
+                        frag = get_last_fragment()
+                        if frag:
+                            frag.presentFragment(PluginSettingsActivity(plugin_obj))
+                            return
+                except:
+                    pass
+                
+                try:
+                    PC.openPluginSettings(self.id)
+                    return
+                except:
+                    pass
+            
+            frag = get_last_fragment()
+            if frag and PC:
+                PC.getInstance().openPluginSettings(self.id, frag)
+        except Exception as e:
+            log(f"Error opening settings: {e}")
     
     def start_proxy(self):
         """Запускает прокси сервер"""
@@ -645,32 +733,3 @@ class TGWSPlugin(BasePlugin):
             self.start_proxy()
         else:
             self.stop_proxy()
-    
-    def getMenuItems(self):
-        """Возвращает пункты меню"""
-        return [
-            MenuItemData(
-                "settings",
-                Z("menu_settings"),
-                lambda: self._open_settings()
-            )
-        ]
-    
-    def _open_settings(self):
-        """Открывает настройки плагина через стандартный механизм Exteragram"""
-        try:
-            from com.exteragram.messenger.plugins import PluginsController
-            PC = PluginsController.getInstance()
-            if PC:
-                try:
-                    PC.openPluginSettings(self.id)
-                    return
-                except:
-                    pass
-            # Fallback: используем get_last_fragment
-            from client_utils import get_last_fragment
-            frag = get_last_fragment()
-            if frag and PC:
-                PC.getInstance().openPluginSettings(self.id, frag)
-        except Exception as e:
-            log(f"Error opening settings: {e}")
