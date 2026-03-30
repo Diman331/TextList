@@ -193,13 +193,15 @@ class ProxyServer:
         self.running = False
         self.connections_count = 0
         self.ws_tunnels_count = 0
+        self.active_connections = 0
+        self.active_ws_tunnels = 0
         self.lock = threading.Lock()
         self.active_sockets = []
     
     def start(self):
         """Запускает прокси сервер"""
         if self.running:
-            return
+            return True
         
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -216,6 +218,7 @@ class ProxyServer:
                         client, addr = self.server_socket.accept()
                         with self.lock:
                             self.connections_count += 1
+                            self.active_connections += 1
                         threading.Thread(target=self.handle_client, args=(client, addr), daemon=True).start()
                     except socket.timeout:
                         continue
@@ -226,9 +229,11 @@ class ProxyServer:
             
             threading.Thread(target=serve, daemon=True).start()
             log(f"TG WS Proxy started on {self.host}:{self.port}")
+            return True
         except Exception as e:
             log(f"Failed to start proxy: {e}")
             self.running = False
+            return False
     
     def stop(self):
         """Останавливает прокси сервер"""
@@ -247,6 +252,8 @@ class ProxyServer:
                 except:
                     pass
             self.active_sockets.clear()
+            self.active_connections = 0
+            self.active_ws_tunnels = 0
         
         log("TG WS Proxy stopped")
     
@@ -324,14 +331,16 @@ class ProxyServer:
                     
                     with self.lock:
                         self.ws_tunnels_count += 1
+                        self.active_ws_tunnels += 1
                     
                     log(f"WS tunnel DC{dc} for {dest_addr}:{dest_port}")
                     
-                    # Создаём WebSocket туннель
-                    self.relay_via_websocket(client_socket, dc, init_data)
-                    
-                    with self.lock:
-                        self.ws_tunnels_count -= 1
+                    try:
+                        # Создаём WebSocket туннель
+                        self.relay_via_websocket(client_socket, dc, init_data)
+                    finally:
+                        with self.lock:
+                            self.active_ws_tunnels -= 1
                 else:
                     client_socket.close()
             else:
@@ -349,6 +358,7 @@ class ProxyServer:
             with self.lock:
                 if client_socket in self.active_sockets:
                     self.active_sockets.remove(client_socket)
+                self.active_connections = max(0, self.active_connections - 1)
     
     def relay_direct(self, client_socket, dest_addr, dest_port):
         """Прямое TCP реле"""
@@ -571,8 +581,8 @@ class ProxyServer:
         with self.lock:
             return {
                 "running": self.running,
-                "connections": self.connections_count,
-                "ws_tunnels": self.ws_tunnels_count,
+                "connections": self.active_connections,
+                "ws_tunnels": self.active_ws_tunnels,
                 "active_sockets": len(self.active_sockets),
             }
 
@@ -686,24 +696,27 @@ class TGWSPlugin(BasePlugin):
     def start_proxy(self):
         """Запускает прокси сервер"""
         if self.proxy_server and self.proxy_server.running:
-            return
+            return True
         
         self.proxy_server = ProxyServer()
-        self.proxy_server.start()
-        self.enabled = True
-        _pset_bool("enabled", True)
-        
-        # Автонастройка прокси в Telegram
-        self.auto_configure_proxy()
+        result = self.proxy_server.start()
+        if result:
+            self.enabled = True
+            _pset_bool("enabled", True)
+            # Автонастройка прокси в Telegram
+            self.auto_configure_proxy()
+        return result
     
     def stop_proxy(self):
         """Останавливает прокси сервер"""
+        was_running = self.proxy_server is not None and self.proxy_server.running
         if self.proxy_server:
             self.proxy_server.stop()
             self.proxy_server = None
         
         self.enabled = False
         _pset_bool("enabled", False)
+        return was_running
     
     def auto_configure_proxy(self):
         """Автоматически настраивает прокси в Telegram"""
@@ -753,31 +766,62 @@ class TGWSPlugin(BasePlugin):
             on_change=lambda v: self.toggle_plugin(v)
         ))
         
-        # Статус
-        status = Z("status_running") if (self.proxy_server and self.proxy_server.running) else Z("status_stopped")
-        items.append(Text(text=f"{Z('proxy_status')}: {status}", icon="msg_settings"))
+        # Статус - обновляемый текст
+        def get_status_text():
+            status = Z("status_running") if (self.proxy_server and self.proxy_server.running) else Z("status_stopped")
+            return f"{Z('proxy_status')}: {status}"
+        
+        items.append(Text(key="status_text", text=get_status_text(), icon="msg_settings"))
         
         # Кнопки управления
-        if self.proxy_server and self.proxy_server.running:
-            items.append(Text(text=Z("stop_proxy"), icon="msg_stop", on_click=lambda v: self.stop_proxy()))
-        else:
-            items.append(Text(text=Z("start_proxy"), icon="msg_start", on_click=lambda v: self.start_proxy()))
+        def get_start_stop_item():
+            if self.proxy_server and self.proxy_server.running:
+                return Text(text=Z("stop_proxy"), icon="msg_stop", on_click=lambda v: self.stop_proxy_and_refresh())
+            else:
+                return Text(text=Z("start_proxy"), icon="msg_start", on_click=lambda v: self.start_proxy_and_refresh())
+        
+        items.append(get_start_stop_item())
         
         # Автонастройка
         items.append(Text(text=Z("auto_config"), icon="msg_link", on_click=lambda v: self.auto_configure_proxy()))
         
         # Статистика
-        if self.proxy_server:
-            stats = self.proxy_server.get_stats()
-            items.append(Divider())
-            items.append(Header(text=Z("connection_info")))
-            items.append(Text(text=f"{Z('active_connections')}: {stats['connections']}", icon="msg_info"))
-            items.append(Text(text=f"{Z('ws_tunnels')}: {stats['ws_tunnels']}", icon="msg_info"))
+        def get_stats_items():
+            stats_items = []
+            if self.proxy_server:
+                stats = self.proxy_server.get_stats()
+                stats_items.append(Divider())
+                stats_items.append(Header(text=Z("connection_info")))
+                stats_items.append(Text(key="conn_count", text=f"{Z('active_connections')}: {stats['connections']}", icon="msg_info"))
+                stats_items.append(Text(key="ws_count", text=f"{Z('ws_tunnels')}: {stats['ws_tunnels']}", icon="msg_info"))
+            return stats_items
+        
+        items.extend(get_stats_items())
         
         items.append(Divider())
         items.append(Text(text=Z("open_tg_settings"), icon="msg_settings", on_click=lambda v: self._open_tg_proxy_settings()))
         
         return items
+    
+    def start_proxy_and_refresh(self):
+        """Запускает прокси и обновляет UI"""
+        self.start_proxy()
+        self.refresh_settings()
+    
+    def stop_proxy_and_refresh(self):
+        """Останавливает прокси и обновляет UI"""
+        self.stop_proxy()
+        self.refresh_settings()
+    
+    def refresh_settings(self):
+        """Обновляет экран настроек"""
+        try:
+            from com.exteragram.messenger.plugins import PluginsController
+            PC = PluginsController.getInstance()
+            if PC:
+                PC.reloadPluginSettings(self.id)
+        except Exception as e:
+            log(f"Error refreshing settings: {e}")
     
     def _open_tg_proxy_settings(self):
         """Открывает настройки прокси Telegram"""
